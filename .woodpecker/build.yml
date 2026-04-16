@@ -1,0 +1,69 @@
+# era-bellman-cuda GPU Build Pipeline
+# Compiles the ACDC fork of era-bellman-cuda (Grumpkin G1 MSM + BN254 MSM/NTT/FFT)
+# against CUDA 12.x on the GPU agent (prover001: RTX PRO 6000 Ada, sm_89).
+#
+# This library is also built embedded in rust-builder:1.92.0-ci-cuda
+# (infra/docker/rust-ci/Dockerfile.cuda) — this pipeline validates that
+# the source still compiles cleanly after any changes.
+
+labels:
+  platform: gpu  # Routes to woodpecker-agent-gpu on prover001
+
+when:
+  - event: push
+    branch: main
+  - event: pull_request
+  - event: manual
+
+steps:
+  - name: sync
+    image: alpine/git
+    volumes:
+      - /home/devops/working-repos:/repos
+    commands:
+      - git config --global --add safe.directory /repos/era-bellman-cuda
+      - cd /repos/era-bellman-cuda && git fetch origin main && git reset --hard origin/main
+
+  - name: cmake-build
+    image: nvidia/cuda:12.6.2-devel-ubuntu24.04
+    volumes:
+      - /home/devops/working-repos:/repos
+    environment:
+      DEBIAN_FRONTEND: noninteractive
+    commands:
+      - |
+        apt-get update -qq
+        apt-get install -y --no-install-recommends cmake ninja-build 2>/dev/null
+        echo "nvcc: $(nvcc --version | tail -1)"
+        echo "cmake: $(cmake --version | head -1)"
+        cd /repos/era-bellman-cuda
+        rm -rf build
+        cmake -B build -S . \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CUDA_ARCHITECTURES=89 \
+          -DBUILD_TESTS=OFF \
+          -G Ninja
+        cmake --build build --parallel $(nproc)
+        ls -lh build/src/libbellman-cuda.a
+        echo "BUILD OK — libbellman-cuda.a $(du -sh build/src/libbellman-cuda.a | cut -f1)"
+
+  - name: verify-symbols
+    image: nvidia/cuda:12.6.2-devel-ubuntu24.04
+    volumes:
+      - /home/devops/working-repos:/repos
+    commands:
+      - |
+        cd /repos/era-bellman-cuda
+        LIB=build/src/libbellman-cuda.a
+        echo "Verifying required MSM symbols are present..."
+        # BN254 G1 MSM (ZK prover core)
+        nm --defined-only $LIB | grep -q "msm_set_up"      && echo "OK: msm_set_up"
+        nm --defined-only $LIB | grep -q "msm_execute_async" && echo "OK: msm_execute_async"
+        nm --defined-only $LIB | grep -q "msm_tear_down"   && echo "OK: msm_tear_down"
+        # Grumpkin G1 MSM (Nova IVC CycleFold — ACDC addition)
+        nm --defined-only $LIB | grep -q "grumpkin_msm_set_up"       && echo "OK: grumpkin_msm_set_up"
+        nm --defined-only $LIB | grep -q "grumpkin_msm_execute_async" && echo "OK: grumpkin_msm_execute_async"
+        nm --defined-only $LIB | grep -q "grumpkin_msm_tear_down"    && echo "OK: grumpkin_msm_tear_down"
+        # NTT (ZK proving)
+        nm --defined-only $LIB | grep -q "ntt_execute_async" && echo "OK: ntt_execute_async"
+        echo "Symbol verification PASS"
