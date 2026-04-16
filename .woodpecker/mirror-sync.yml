@@ -25,6 +25,7 @@ steps:
         exit 1
 
   - name: radicle-sync
+    failure: ignore
     image: curlimages/curl:latest
     when:
       - event: push
