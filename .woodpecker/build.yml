@@ -28,7 +28,7 @@ steps:
         echo "nvcc: $(nvcc --version | tail -1)"
         echo "cmake: $(cmake --version | head -1)"
         # Clone source into container — no host volume dependency
-        git clone http://source.ac-dc.network:3000/alpha-delta-network/era-bellman-cuda /tmp/era-bellman-cuda
+        git clone https://github.com/Novarra-BBX/era-bellman-cuda /tmp/era-bellman-cuda
         cd /tmp/era-bellman-cuda
         # Checkout specific commit if available, fallback to main
         if [ -n "$CI_COMMIT_SHA" ]; then
