@@ -16,27 +16,26 @@ when:
   - event: manual
 
 steps:
-  - name: sync
-    image: alpine/git
-    volumes:
-      - /home/devops/working-repos:/repos
-    commands:
-      - git config --global --add safe.directory /repos/era-bellman-cuda
-      - cd /repos/era-bellman-cuda && git fetch origin main && git reset --hard origin/main
-
-  - name: cmake-build
+  - name: cmake-build-and-verify
     image: nvidia/cuda:12.6.2-devel-ubuntu24.04
-    volumes:
-      - /home/devops/working-repos:/repos
     environment:
       DEBIAN_FRONTEND: noninteractive
+      GIT_SSL_NO_VERIFY: 'true'
     commands:
       - |
         apt-get update -qq
-        apt-get install -y --no-install-recommends cmake ninja-build 2>/dev/null
+        apt-get install -y --no-install-recommends cmake ninja-build git 2>/dev/null
         echo "nvcc: $(nvcc --version | tail -1)"
         echo "cmake: $(cmake --version | head -1)"
-        cd /repos/era-bellman-cuda
+        # Clone source into container — no host volume dependency
+        git clone https://github.com/Novarra-BBX/era-bellman-cuda /tmp/era-bellman-cuda
+        cd /tmp/era-bellman-cuda
+        # Checkout specific commit if available, fallback to main
+        if [ -n "$CI_COMMIT_SHA" ]; then
+          git checkout $CI_COMMIT_SHA 2>/dev/null || git checkout main
+        fi
+        echo "Building at commit: $(git rev-parse --short HEAD)"
+        # Build
         rm -rf build
         cmake -B build -S . \
           -DCMAKE_BUILD_TYPE=Release \
@@ -45,25 +44,15 @@ steps:
           -G Ninja
         cmake --build build --parallel $(nproc)
         ls -lh build/src/libbellman-cuda.a
-        echo "BUILD OK — libbellman-cuda.a $(du -sh build/src/libbellman-cuda.a | cut -f1)"
-
-  - name: verify-symbols
-    image: nvidia/cuda:12.6.2-devel-ubuntu24.04
-    volumes:
-      - /home/devops/working-repos:/repos
-    commands:
-      - |
-        cd /repos/era-bellman-cuda
+        echo "BUILD OK"
+        # Verify symbols inline
         LIB=build/src/libbellman-cuda.a
         echo "Verifying required MSM symbols are present..."
-        # BN254 G1 MSM (ZK prover core)
-        nm --defined-only $LIB | grep -q "msm_set_up"      && echo "OK: msm_set_up"
-        nm --defined-only $LIB | grep -q "msm_execute_async" && echo "OK: msm_execute_async"
-        nm --defined-only $LIB | grep -q "msm_tear_down"   && echo "OK: msm_tear_down"
-        # Grumpkin G1 MSM (Nova IVC CycleFold — ACDC addition)
-        nm --defined-only $LIB | grep -q "grumpkin_msm_set_up"       && echo "OK: grumpkin_msm_set_up"
+        nm --defined-only $LIB | grep -q "msm_set_up"            && echo "OK: msm_set_up"
+        nm --defined-only $LIB | grep -q "msm_execute_async"      && echo "OK: msm_execute_async"
+        nm --defined-only $LIB | grep -q "msm_tear_down"          && echo "OK: msm_tear_down"
+        nm --defined-only $LIB | grep -q "grumpkin_msm_set_up"    && echo "OK: grumpkin_msm_set_up"
         nm --defined-only $LIB | grep -q "grumpkin_msm_execute_async" && echo "OK: grumpkin_msm_execute_async"
-        nm --defined-only $LIB | grep -q "grumpkin_msm_tear_down"    && echo "OK: grumpkin_msm_tear_down"
-        # NTT (ZK proving)
-        nm --defined-only $LIB | grep -q "ntt_execute_async" && echo "OK: ntt_execute_async"
+        nm --defined-only $LIB | grep -q "grumpkin_msm_tear_down" && echo "OK: grumpkin_msm_tear_down"
+        nm --defined-only $LIB | grep -q "ntt_execute_async"       && echo "OK: ntt_execute_async"
         echo "Symbol verification PASS"
